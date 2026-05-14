@@ -3,8 +3,10 @@ package com.emi.tui.util;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import com.emi.tui.modules.Environment;
+import com.emi.tui.service.IdeDetector;
 
 public class OsUtils {
   
@@ -53,10 +55,11 @@ public class OsUtils {
 
   //windows user profile detection for wsl, if not wsl just return system user name
 
-  public static String windowsUserProfile(){
+  public static String windowsUserProfile() throws IOException{
     if(!IS_WSL)return System.getProperty("user.name");
 
-    Path userProfile = Path.of("/mnt/c/Users");
+    String winMountPath = getWindowsMountPath();
+    Path userProfile = Path.of(winMountPath + "/Users");
 
     if(!Files.exists(userProfile)){
       return System.getProperty("user.name");
@@ -75,6 +78,41 @@ public class OsUtils {
     } catch (IOException e) {
       return System.getProperty("user.name");
     }
+  }
+
+
+
+
+  public static String getWindowsMountPath() throws IOException{
+
+    //checking the wsl for custom mount root
+
+    String mountRoot = "/mnt/";
+    Path wslConf = Path.of("/etc/wsl.conf");
+
+    if(Files.exists(wslConf)){
+       for(String line : Files.readAllLines(wslConf)){
+          if(line.trim().startsWith("root=")) {
+            mountRoot = line.split("=")[1].trim();
+
+            mountRoot = mountRoot.replaceAll("/$", ""); // remove trailing slash if exists
+          }
+       }
+    }
+
+    //finding actual windows drive
+
+    String systemDrive = "c" ; // default to c if not found
+    List<String> output = IdeDetector.runCommand("cmd.exe", "/c", "echo %SystemDrive%");
+
+    if(!output.isEmpty()){
+      String raw = output.get(0).trim();
+      if(raw.length() >= 1){
+        systemDrive = String.valueOf(raw.charAt(0)).toLowerCase();
+      }
+    }
+
+    return mountRoot + "/" + systemDrive;
   }
 
 
