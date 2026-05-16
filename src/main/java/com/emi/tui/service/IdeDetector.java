@@ -13,6 +13,7 @@ import java.util.Map;
 import com.emi.tui.modules.DetectedIde;
 import com.emi.tui.modules.Environment;
 import com.emi.tui.util.OsUtils;
+import com.emi.tui.util.PathBridge;
 
 //scans the environment for the ide 
 // windows 'where' command is used to find the path of the ide executable
@@ -24,7 +25,7 @@ import com.emi.tui.util.OsUtils;
 
 public class IdeDetector {
 
-  public Map<Environment, List<DetectedIde>> detect(){
+  public Map<Environment, List<DetectedIde>> detect() throws IOException{
     Map<Environment, List<DetectedIde>> result = new LinkedHashMap<>();
 
     if(OsUtils.isWindows()){
@@ -94,6 +95,124 @@ public class IdeDetector {
     return depulicate(detectedIdes);
   }
 
+  //scan linux 
+  private List<DetectedIde> scanLinux(){
+    List<DetectedIde> found = new ArrayList<>();
+
+          String[][] knownPaths = {
+            // { executable path,                         display name,    open flag }
+            {"/usr/local/bin/idea",                      "IntelliJ IDEA", null     },
+            {"/opt/idea/bin/idea.sh",                    "IntelliJ IDEA", null     },
+            {"/snap/bin/idea-ultimate",                  "IntelliJ IDEA", null     },
+            {"/snap/bin/intellij-idea-community",        "IntelliJ IDEA", null     },
+            {"/usr/bin/code",                            "VS Code",       null     },
+            {"/snap/bin/code",                           "VS Code",       null     },
+            {"/usr/bin/codium",                          "VSCodium",      null     },
+            {"/opt/eclipse/eclipse",                     "Eclipse IDE",   "-data"  },
+            {"/usr/bin/eclipse",                         "Eclipse IDE",   "-data"  },
+            {"/snap/bin/eclipse",                        "Eclipse IDE",   "-data"  },
+        };
+
+    for(String[] entry : knownPaths){
+        if (Files.exists(Path.of(entry[0]))) {
+          found.add(DetectedIde.builder()
+                  .name(entry[1])
+                  .executablePath(entry[0])
+                  .environment(OsUtils.isWsl() ? Environment.WSL : Environment.LINUX)
+                  .openFlags(entry[2])
+                  .build());
+      }
+    }
+
+        tryWhichCommand(found, "idea",    "IntelliJ IDEA", null);
+        tryWhichCommand(found, "code",    "VS Code",       null);
+        tryWhichCommand(found, "codium",  "VSCodium",      null);
+        tryWhichCommand(found, "eclipse", "Eclipse IDE",   "-data");
+
+
+    found.addAll(scanDesktopFiles()); // if we are in wsl, we can also try to find windows ides, since wsl can run windows executables, we can use the same method as windows to find the ides, but we need to convert the windows path to wsl path
+
+    return depulicate(found);
+  }
+
+
+  //scan mac
+
+  private List<DetectedIde> scanMac(){
+    List<DetectedIde> found = new ArrayList<>();
+
+    String[][] apps = {
+            {"/Applications/IntelliJ IDEA.app/Contents/MacOS/idea", "IntelliJ IDEA", null  },
+            {"/Applications/IntelliJ IDEA CE.app/Contents/MacOS/idea","IntelliJ IDEA Community",null},
+            {"/Applications/Visual Studio Code.app/Contents/MacOS/Electron","VS Code",null},
+            {"/Applications/VSCodium.app/Contents/MacOS/VSCodium",   "VSCodium",      null  },
+            {"/Applications/Eclipse.app/Contents/MacOS/eclipse",     "Eclipse IDE",   "-data"},
+        };
+
+    for(String [] entry : apps){
+      if(Files.exists(Path.of(entry[0]))){
+        found.add(DetectedIde.builder()
+          .name(entry[1])
+          .executablePath(entry[0])
+          .environment(Environment.MACOS)
+          .openFlags(entry[2])
+          .build());
+      }
+    }
+
+        tryWhichCommand(found, "idea",    "IntelliJ IDEA", null);
+        tryWhichCommand(found, "code",    "VS Code",       null);
+        tryWhichCommand(found, "eclipse", "Eclipse IDE",   "-data");    
+
+
+        return depulicate(found);
+  }
+
+
+  // Scans /usr/share/applications/ for IDE .desktop files.
+  // Useful for IDEs installed via package managers that don't
+  // land in standard /usr/bin or /usr/local/bin paths.
+
+  private List<DetectedIde> scanDesktopFiles(){
+     List<DetectedIde> found = new ArrayList<>();
+
+    Path desktopDir =  Path.of("/usr/share/applications");
+
+    Map<String, String> ideNameMap = Map.of(
+      "jetbrains-idea",  "IntelliJ IDEA",
+      "code",            "VS Code",
+      "codium",          "VSCodium",
+      "eclipse",         "Eclipse IDE"
+    );
+
+    try{
+      Files.list(desktopDir)
+        .filter(path -> path.toString().endsWith(".desktop"))
+        .forEach(desktopfile -> {
+          String fileName = desktopfile.getFileName().toString().replace(".desktop", "");
+            for(Map.Entry<String,String> entry : ideNameMap.entrySet()){
+              if(fileName.startsWith(entry.getKey())){
+                String exec = extractExecFromDesktopFile(desktopfile); 
+                if(exec!=null){
+                  found.add(DetectedIde.builder()
+                              .name(entry.getValue())
+                              .executablePath(exec)
+                              .environment(OsUtils.isWsl()
+                                      ? Environment.WSL
+                                      : Environment.LINUX)
+                              .openFlags(null)
+                              .build());
+                }
+              }
+            }
+        });
+
+    }catch(IOException e){
+  // do nothing, since this is just for ide detection and not critical
+    }
+
+    return found ;
+  }
 
   // Query windows registry for installed ides
 
@@ -147,6 +266,59 @@ public class IdeDetector {
     return found ;
   }
 
+
+  //windows scan from inside wsl 
+  private List<DetectedIde> scanWindowsFromWsl() throws IOException{
+    List<DetectedIde> found = new ArrayList<>();
+
+    String winUser  = OsUtils.windowsUserProfile();
+
+    String programFiles    = "/mnt/c/Program Files";
+    String localAppData    = "/mnt/c/Users/" + winUser + "/AppData/Local";
+
+    //intellij
+    checkWslWindowsPath(found, programFiles + "/JetBrains",
+            "IntelliJ IDEA", "bin/idea64.exe", null);
+
+
+     //vscode
+    checkWslWindowsPath(found, localAppData + "/Programs/Microsoft VS Code",
+            "VS Code", "Code.exe", null);
+
+    //vcsodium
+    checkWslWindowsPath(found, localAppData + "/Programs/VSCodium",
+            "VSCodium", "VSCodium.exe", null);  
+
+            // Eclipse
+    checkWslWindowsPath(found,
+            programFiles + "/Eclipse Foundation",
+            "Eclipse IDE", "eclipse.exe", "-data");
+
+    // also try Program Files (x86)
+    checkWslWindowsPath(found,
+            "/mnt/c/Program Files (x86)/Eclipse Foundation",
+            "Eclipse IDE", "eclipse.exe", "-data");
+
+    
+    //convert /mnt/c back to windows path 
+    //as we will launce via cmd whihc will need c:/... paths
+        List<DetectedIde> windowsFormatted = new ArrayList<>();
+        for (DetectedIde ide : found) {
+          String winPath = PathBridge
+                  .wslToWindowsPath(ide.getExecutablePath());
+          windowsFormatted.add(DetectedIde.builder()
+                  .name(ide.getName())
+                  .executablePath(winPath)
+                  .environment(Environment.WINDOWS)
+                  .openFlags(ide.getOpenFlags())
+                  .build());
+        }
+ 
+        return depulicate(windowsFormatted);
+    
+  }
+
+
   //runs the command and returns the output as a list of strings, each string is a line of the output, if any error occurs, an empty list is returned, since this is just for ide detection and not critical
   public static List<String> runCommand(String... command){
     
@@ -172,6 +344,16 @@ public class IdeDetector {
     return lines;
   }
 
+
+  private void checkWslWindowsPath(List<DetectedIde> found,
+                                  String baseDir,
+                                  String ideName,
+                                  String exeName,
+                                  String openFlag) {
+    // reuse the same logic — paths are still just paths
+       checkWindowsPath(found, baseDir, ideName, exeName, openFlag);
+    }
+
   //HELPER COMMANDE RUNNERS 
 
   private void tryWhereCommand(List<DetectedIde> found, String command, String ideName, Environment env, String openFlag){
@@ -190,7 +372,7 @@ public class IdeDetector {
   }
 
 
-  private void tryWhichCommand(List<DetectedIde> found, String command, String ideName, Environment env, String openFlag){
+  private void tryWhichCommand(List<DetectedIde> found, String command, String ideName, String openFlag){
     List<String> output = runCommand("which", command);
     for(String line : output){
       line = line.trim();
@@ -208,6 +390,19 @@ public class IdeDetector {
   //path checker for windows, since windows does not have a standard location for ides, we need to check multiple locations and also check the registry for installed programs
 
   // HELPER METHODS
+
+  private String extractExecFromDesktopFile(Path desktopFile){
+    try{
+      for(String line : Files.readAllLines(desktopFile)){
+        if(line.startsWith("Exec=")){
+          return line.substring(5).split(" ")[0].trim(); // get the part after 'Exec=' and before any space, since the Exec line can contain flags after the executable path
+        }
+      }
+    }catch(IOException e){}
+      return null ;
+  } 
+
+  //check windows path for the ide, since windows does not have a standard location for ides, we need to check multiple locations and also check the registry for installed programs, this method checks a specific directory for the ide executable, if the executable is found, it is added to the list of found ides, if the directory does not exist, it is ignored, since this is just for ide detection and not critical    
 
   private void checkWindowsPath(
     List<DetectedIde> found,
