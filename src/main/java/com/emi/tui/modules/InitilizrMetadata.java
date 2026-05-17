@@ -23,6 +23,8 @@ import lombok.Data;
 @JsonIgnoreProperties(ignoreUnknown = true)
 public class InitilizrMetadata {
   
+  private VersionGroup type;
+  private VersionGroup JavaVersion;
   private VersionGroup bootVersion;
   private DependencyGroup dependencies;
 
@@ -149,4 +151,54 @@ public class InitilizrMetadata {
 
     return dependencies.getValues();
   } 
+
+
+  public String defaultJavaVersion(){
+    if(JavaVersion==null){
+      return "21"; // fallback to a hardcoded default if metadata is missing or malformed
+    }
+    if(JavaVersion.getDefaultValue()!=null){
+       return JavaVersion.getDefaultValue();
+    }
+    List<SelectItem> versions = JavaVersion.getValues();
+
+    return (versions != null && !versions.isEmpty())
+            ? versions.get(0).getId()
+            : "21";  
+  }
+
+
+  public List<String> JavaVersionIds(){
+    if(JavaVersion == null || JavaVersion.getValues() == null){
+      return List.of("21", "17", "11");
+    }
+
+    return JavaVersion.getValues().stream()
+        .map(SelectItem::getId)
+        .toList();
+  }
+
+
+  public String defaultBuildTool(){
+    if(type==null || type.getDefaultValue()==null){
+      return "maven-project"; // fallback to a hardcoded default if metadata is missing or malformed
+    }
+
+    if(type.getDefaultValue()!=null){
+      return type.getDefaultValue();
+    }
+
+    List<SelectItem> buildTools = type.getValues();
+    return (buildTools!=null && !buildTools.isEmpty())
+            ? buildTools.get(0).getId()
+            : "maven-project";
+
+  }
+
+  public List<SelectItem> buildToolsOptions(){
+    if(type ==null || type.getValues() == null){
+      return List.of(new SelectItem());
+    }
+    return type.getValues();
+  }
 }
