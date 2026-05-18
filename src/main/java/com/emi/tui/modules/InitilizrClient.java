@@ -5,7 +5,6 @@ import java.io.IOException;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-import net.bytebuddy.agent.builder.AgentBuilder.InitializationStrategy.Minimal;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;

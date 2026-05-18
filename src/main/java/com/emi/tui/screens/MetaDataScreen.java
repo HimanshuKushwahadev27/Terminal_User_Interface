@@ -2,7 +2,6 @@ package com.emi.tui.screens;
 
 import java.util.List;
 
-import com.emi.tui.modules.InitilizrClient;
 import com.emi.tui.modules.InitilizrMetadata;
 import com.emi.tui.modules.InitilizrMetadata.SelectItem;
 import com.emi.tui.modules.ProjectConfig;
@@ -23,7 +22,6 @@ import com.googlecode.lanterna.gui2.Window;
 import com.googlecode.lanterna.gui2.WindowBasedTextGUI;
 import com.googlecode.lanterna.gui2.dialogs.MessageDialog;
 import com.googlecode.lanterna.gui2.dialogs.MessageDialogButton;
-import com.googlecode.lanterna.screen.TerminalScreen;
 
 /*
  Screen 1/4 - Metadata collection
@@ -147,7 +145,8 @@ public class MetaDataScreen {
               .filter(bt -> bt.getId().equals(currentBuildTool))
               .findFirst()
               .ifPresent(bt -> buildToolRadio.setCheckedItem(bt.getName()));
-
+    buildToolPanel.addComponent(buildToolRadio);
+    formPanel.addComponent(buildToolPanel);
     // Packaging ------------------------------ radio group
     //using hardcoded values for packaging as initializr metadata doesn't provide options for that, and the defaults are usually the same (jar) and the only other option is war which is also well known, so we can just hardcode those values without fetching them from the metadata.
     formPanel.addComponent(label("Packaging:"));
