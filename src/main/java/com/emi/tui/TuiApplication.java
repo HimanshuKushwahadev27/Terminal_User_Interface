@@ -1,4 +1,4 @@
-package com.emi.tui.TUI;
+package com.emi.tui;
 
 
 public class TuiApplication {
