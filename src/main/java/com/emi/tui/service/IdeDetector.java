@@ -9,6 +9,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
 import com.emi.tui.modules.DetectedIde;
 import com.emi.tui.modules.Environment;
@@ -26,33 +27,42 @@ import com.emi.tui.util.PathBridge;
 public class IdeDetector {
 
   public Map<Environment, List<DetectedIde>> detect() throws IOException{
-    Map<Environment, List<DetectedIde>> result = new LinkedHashMap<>();
+  Map<Environment, List<DetectedIde>> result = new LinkedHashMap<>();
 
-    if(OsUtils.isWindows()){
-      result.put(Environment.WINDOWS, scanWindows());
+    if (OsUtils.isWsl()) {
+        // PATH scan catches everything — Windows and WSL IDEs both
+        List<DetectedIde> fromPath = scanFromPath(Environment.WSL);
+
+        // split by environment
+        List<DetectedIde> wslIdes = fromPath.stream()
+                .filter(ide -> ide.getEnvironment() == Environment.WSL)
+                .collect(Collectors.toList());
+
+        List<DetectedIde> windowsIdes = fromPath.stream()
+                .filter(ide -> ide.getEnvironment() == Environment.WINDOWS)
+                .collect(Collectors.toList());
+
+        // also run targeted scans as fallback
+        wslIdes.addAll(scanLinux());
+        windowsIdes.addAll(scanWindowsFromWsl());
+
+        // also check VS Code server
+        scanVsCodeServer(wslIdes);
+
+        if (!wslIdes.isEmpty())
+            result.put(Environment.WSL, depulicate(wslIdes));
+        if (!windowsIdes.isEmpty())
+            result.put(Environment.WINDOWS, depulicate(windowsIdes));
+
+    } else if (OsUtils.isWindows()) {
+        result.put(Environment.WINDOWS, scanWindows());
+    } else if (OsUtils.isMac()) {
+        result.put(Environment.MACOS, scanMac());
+    } else {
+        result.put(Environment.LINUX, scanLinux());
     }
-    
-    else if (OsUtils.isMac()){
-      result.put(Environment.MACOS, scanMac());
-    }
 
-    else if(OsUtils.isLinux() || OsUtils.isWsl()){
-     
-      List<DetectedIde> linuxIdes = scanLinux();
-
-      if(linuxIdes.isEmpty()){
-        result.put(Environment.WSL, linuxIdes); 
-      }
-
-      if(OsUtils.isWsl()){
-        List<DetectedIde> windowsIdes = scanWindowsFromWsl();;
-        if(windowsIdes.isEmpty()){
-          result.put(Environment.WINDOWS, windowsIdes);
-        }
-      }
-    }
-
-    return result;
+    return result;    
   }
 
   private List<DetectedIde> scanWindows(){
@@ -132,6 +142,11 @@ public class IdeDetector {
 
     found.addAll(scanDesktopFiles()); // if we are in wsl, we can also try to find windows ides, since wsl can run windows executables, we can use the same method as windows to find the ides, but we need to convert the windows path to wsl path
 
+    if (OsUtils.isWsl()) {
+        try{
+          scanVsCodeServer(found);
+        } catch(IOException e){}         // VS Code Remote Server
+    }
     return depulicate(found);
   }
 
@@ -318,6 +333,64 @@ public class IdeDetector {
     
   }
 
+  //scans the directory in the currnt path for the known IDE 
+  //works regardless of drive letter
+
+  private List<DetectedIde> scanFromPath(Environment env){
+    List<DetectedIde> found = new ArrayList<>();
+
+        // get PATH via bash so we see the full shell PATH
+    // not the bare environment ProcessBuilder would normally see
+    List<String> output = runCommand(
+            "bash", "-c", "echo $PATH");
+
+    if (output.isEmpty()) return found;
+
+    String pathVar = output.get(0);
+    String[] pathDirs = pathVar.split(":");
+
+    // known IDE executable names to look for in each PATH dir
+    // format - { executableName, displayName, openFlag }
+    String[][] ideExecutables = {
+        {"idea",          "IntelliJ IDEA",   null   },
+        {"idea.sh",       "IntelliJ IDEA",   null   },
+        {"idea64.exe",    "IntelliJ IDEA",   null   },
+        {"code",          "VS Code",         null   },
+        {"Code.exe",      "VS Code",         null   },
+        {"codium",        "VSCodium",        null   },
+        {"eclipse",       "Eclipse IDE",     "-data"},
+        {"eclipse.exe",   "Eclipse IDE",     "-data"},
+    };
+
+    for (String dir : pathDirs) {
+        dir = dir.trim().replace("'", ""); // strip stray quotes like the ' in your PATH
+        if (dir.isBlank()) continue;
+
+        for (String[] ide : ideExecutables) {
+            Path exePath = Path.of(dir, ide[0]);
+            if (Files.exists(exePath)
+                    && Files.isExecutable(exePath)
+                    && notAlreadyFound(found, exePath.toString())) {
+
+                // determine environment from path
+                Environment ideEnv = exePath.toString().startsWith("/mnt/")
+                        ? Environment.WINDOWS  // it's a Windows binary via WSL mount
+                        : env;                 // native Linux/WSL binary
+
+                found.add(DetectedIde.builder()
+                        .name(ide[1])
+                        .executablePath(exePath.toString())
+                        .environment(ideEnv)
+                        .openFlags(ide[2])
+                        .build());
+            }
+        }
+    }
+
+    return found;
+
+  }
+
 
   //runs the command and returns the output as a list of strings, each string is a line of the output, if any error occurs, an empty list is returned, since this is just for ide detection and not critical
   public static List<String> runCommand(String... command){
@@ -352,9 +425,36 @@ public class IdeDetector {
                                   String openFlag) {
     // reuse the same logic — paths are still just paths
        checkWindowsPath(found, baseDir, ideName, exeName, openFlag);
-    }
+  }
 
-  //HELPER COMMANDE RUNNERS 
+  private void scanVsCodeServer(List<DetectedIde> found) throws IOException {
+    Path vscodeServer = Path.of(
+            System.getProperty("user.home"), ".vscode-server", "bin");
+
+    if (!Files.exists(vscodeServer)) return;
+
+    // each subdirectory is a commit hash — VS Code updates create new ones
+    // e.g. someID
+    Files.list(vscodeServer)
+         .filter(Files::isDirectory)
+         .forEach(hashDir -> {
+             Path cliPath = hashDir
+                     .resolve("bin")
+                     .resolve("remote-cli")
+                     .resolve("code");
+
+             if (Files.exists(cliPath)) {
+                 found.add(DetectedIde.builder()
+                         .name("VS Code (WSL Server)")
+                         .executablePath(cliPath.toString())
+                         .environment(Environment.WSL)
+                         .openFlags(null)
+                         .build());
+             }
+         });
+  }
+
+  //HELPER COMMAND RUNNERS 
 
   private void tryWhereCommand(List<DetectedIde> found, String command, String ideName, Environment env, String openFlag){
     List<String> output = runCommand("where", command);
